@@ -3,9 +3,9 @@ let config = {
   client: 'mysql2',
   connection: {
     host: '47.92.151.105',
-    user: 'agnss',
-    password: 'agnss',
-    database: 'agnss'
+    user: 'root',
+    password: 'nurlink',
+    database: 'wudong'
   },
   pool: { min: 1, max: 10 }
 };

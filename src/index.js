@@ -1,73 +1,97 @@
 const net = require('net');
 const login = require('./login');
-const log = require('../lib/log');
-const message = require('./message');
+const log = require('./log');
+const redis0 = require('./redis').redis0;
 
 const config = {
-  ...require('../lib/config'),
-  ...{
-    timeout: process.env.TIMEOUT ? Number.parseInt(process.env.TIMEOUT) : 70,
-    port: process.env.PORT ? process.env.PORT : 8009
-  }
+  debug: process.env.NODE_ENV == 'production' ? false : true,
+  name: process.env.NAME || 'debug',
+  timeout: process.env.TIMEOUT ? Number.parseInt(process.env.TIMEOUT) : 70,
+  port: process.env.PORT ? process.env.PORT : 9009
 };
 
 const server = net.createServer(socket => {
-  let mount, protocol;
-  let msg;
+  let id, type, msg, duplicate;
   socket.on('data', data => {
     // avoid one message split
     if (msg) msg = Buffer.concat([msg, data]);
     else msg = data;
     setTimeout(async () => {
-      if (msg && msg.length > 2048) msg = null; // avoid too large data
-      const temp = msg;
-      msg = null;
-      if (!mount && temp) {
-        // login
-        const ret = await login(temp);
-        if (ret.error) {
-          socket.end('ERROR - Bad Password\r\n'); //close
-          return;
-        } else {
-          mount = ret.mount;
-          protocol = ret.protocol;
-          socket.write('ICY 200 OK\r\n');
+      // avoid null and too large data
+      if (!msg || msg.length > 8192) {
+        msg = null;
+        return;
+      }
+      if (id) {
+        if (type == 'server') {
+          duplicate.publishBuffer(`source.${id}`, msg);
         }
       } else {
-        // process
-        if (temp && mount) {
-          message({
-            timestamp: new Date().getTime(),
-            protocol: protocol,
-            mount: mount,
-            data: temp
-          });
+        const ret = await login(msg);
+        msg = null;
+        if (ret.error) {
+          socket.end('ERROR - Bad Password\r\n');
+        } else {
+          id = ret.id;
+          type = ret.type;
+          socket.write('ICY 200 OK\r\n');
+          duplicate = redis0.duplicate();
+          // client subscribe
+          if (type == 'client') {
+            duplicate.subscribe(`source.${ret.mount}`, err => {
+              if (err) {
+                log({
+                  level: 'error',
+                  code: 'subscribe.failure',
+                  call: 'caster',
+                  message: err.message
+                });
+                socket.destroy();
+              } else {
+                duplicate.on('messageBuffer', (channel, message) => {
+                  socket.write(message, err => {
+                    if (err) {
+                      log({
+                        level: 'warn',
+                        code: 'send.failure',
+                        call: 'caster',
+                        message: err.message
+                      });
+                      socket.destroy();
+                    }
+                  });
+                });
+              }
+            });
+          }
         }
       }
-    }, 50);
+      msg = null;
+    }, 100);
   });
 
   socket.on('error', err => {
     log({
-      code: err.code || 'socket',
+      code: 'socket',
       call: 'caster.error',
       message: {
-        mount: mount ? mount : socket.remoteAddress,
+        id: id ? id : socket.remoteAddress,
         error: err.message
       },
-      type: 'warn'
+      level: 'warn'
     });
   });
   //连接断开
   socket.on('close', err => {
+    if (duplicate) duplicate.quit();
     log({
       code: 'close',
       call: 'caster.close',
       message: {
-        mount: mount ? mount : socket.remoteAddress,
+        id: id ? id : socket.remoteAddress,
         error: err
       },
-      type: 'warn'
+      level: 'warn'
     });
     // 更新设备状态
   });
@@ -76,8 +100,8 @@ const server = net.createServer(socket => {
     log({
       code: 'timeout',
       call: 'caster.timeout',
-      message: mount ? mount : socket.remoteAddress,
-      type: 'warn'
+      message: id ? id : socket.remoteAddress,
+      level: 'warn'
     });
     socket.destroy();
   });
@@ -88,7 +112,7 @@ server.on('error', err => {
     code: err.code || 'server',
     call: 'caster.server.error',
     message: err.message,
-    type: 'error'
+    level: 'error'
   });
 });
 server.on('connection', socket => {
@@ -97,7 +121,7 @@ server.on('connection', socket => {
       code: 'connect',
       call: 'caster.server.connection',
       message: socket.remoteAddress,
-      type: 'debug'
+      level: 'debug'
     });
 });
 server.listen(config.port, () => {
@@ -105,9 +129,6 @@ server.listen(config.port, () => {
     code: 'server.start',
     call: 'caster.server.listen',
     message: JSON.stringify(config),
-    type: 'info'
+    level: 'info'
   });
-  console.log(
-    `Caster Server '${config.name}-${config.id}' Start, Port: ${config.port}`
-  );
 });

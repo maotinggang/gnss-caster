@@ -8,8 +8,7 @@ let config = {
 };
 if (process.env.REDIS) config = JSON.parse(process.env.REDIS);
 
+config.db = 0;
 exports.redis0 = new ioredis(config);
-config.db = 4;
+config.db = 1;
 exports.redis1 = new ioredis(config);
-config.db = 5;
-exports.redis2 = new ioredis(config);
